@@ -14,16 +14,10 @@ logger = logging.getLogger(__name__)
 class GenerateRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=32768)
     system_prompt: Optional[str] = Field(None, max_length=4096)
-    max_new_tokens: int = Field(512, ge=1, le=8192)
-    temperature: float = Field(0.7, ge=0.0, le=2.0)
-    top_p: float = Field(0.9, ge=0.0, le=1.0)
-    do_sample: bool = Field(True)
 
 
 class GenerateResponse(BaseModel):
     generated_text: str
-    prompt_tokens: int
-    generated_tokens: int
     elapsed_seconds: float
     tokens_per_second: float
 
@@ -39,7 +33,8 @@ class HealthResponse(BaseModel):
 
 class ModelInfoResponse(BaseModel):
     model_id: str
-    dtype: str
+    model_filename: str
+    model_path: str
     simd_level: str
     cache_dir: str
     available_ram_gb: float
@@ -50,10 +45,9 @@ class ModelInfoResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from config import settings
-    from .model import load_model
-    import src.gemma_inference.model as _model_module
+    from .model import load_model, unload_model
 
-    logger.info("Starting Gemma 4 Inference API for model: %s", settings.model_id)
+    logger.info("Starting Gemma 4 Inference API — model: %s", settings.model_id)
     try:
         load_model()
     except Exception as e:
@@ -62,10 +56,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Release model memory on shutdown
-    _model_module._model = None
-    _model_module._tokenizer = None
-    logger.info("Model unloaded.")
+    unload_model()
 
 
 # --- Router ---
@@ -84,10 +75,6 @@ async def generate_endpoint(req: GenerateRequest):
     gr = GenerationRequest(
         prompt=req.prompt,
         system_prompt=req.system_prompt,
-        max_new_tokens=req.max_new_tokens,
-        temperature=req.temperature,
-        top_p=req.top_p,
-        do_sample=req.do_sample,
     )
 
     # Run in executor so the CPU-bound generate() doesn't block the event loop
@@ -100,8 +87,6 @@ async def generate_endpoint(req: GenerateRequest):
 
     return GenerateResponse(
         generated_text=result.generated_text,
-        prompt_tokens=result.prompt_tokens,
-        generated_tokens=result.generated_tokens,
         elapsed_seconds=result.elapsed_seconds,
         tokens_per_second=result.tokens_per_second,
     )
@@ -131,5 +116,4 @@ async def model_info_endpoint():
     if not is_loaded():
         raise HTTPException(status_code=503, detail="Model not loaded yet")
 
-    info = get_model_info()
-    return ModelInfoResponse(**info)
+    return ModelInfoResponse(**get_model_info())

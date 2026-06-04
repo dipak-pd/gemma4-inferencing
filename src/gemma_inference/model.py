@@ -1,24 +1,19 @@
 import logging
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+
+from huggingface_hub import hf_hub_download
 
 from config import settings
 from .cpu_check import check_compatibility
 
 logger = logging.getLogger(__name__)
 
-_model = None
-_tokenizer = None
+_engine = None
+_model_path: str = ""
 _model_info: dict = {}
 
 
-def _select_dtype(simd_level: str) -> torch.dtype:
-    # bfloat16 is only efficient on CPU with AVX-512; otherwise use float32
-    return torch.bfloat16 if simd_level == "avx512" else torch.float32
-
-
 def load_model() -> None:
-    global _model, _tokenizer, _model_info
+    global _engine, _model_path, _model_info
 
     logger.info("Running CPU compatibility check...")
     compat = check_compatibility(settings.model_id)
@@ -38,63 +33,64 @@ def load_model() -> None:
             f"Warnings: {compat['warnings']}"
         )
 
-    dtype = _select_dtype(compat["simd_level"])
-    logger.info("Selected dtype: %s (SIMD level: %s)", dtype, compat["simd_level"])
-
     logger.info(
-        "Loading tokenizer for %s (cache: %s) — first run downloads the model...",
+        "Downloading model file '%s' from '%s' (cache: %s) — first run may take several minutes...",
+        settings.model_filename,
         settings.model_id,
         settings.hf_cache_dir,
     )
     try:
-        _tokenizer = AutoTokenizer.from_pretrained(
-            settings.model_id,
-            token=settings.hf_token,
+        _model_path = hf_hub_download(
+            repo_id=settings.model_id,
+            filename=settings.model_filename,
             cache_dir=settings.hf_cache_dir,
+            token=settings.hf_token or None,
         )
-    except OSError as e:
-        _raise_hf_error(e)
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to download model '{settings.model_filename}' from '{settings.model_id}'. "
+            f"Error: {e}"
+        ) from e
 
-    logger.info("Loading model weights (this may take several minutes on first run)...")
+    logger.info("Model file ready at: %s", _model_path)
+    logger.info("Initialising LiteRT engine on CPU...")
+
     try:
-        _model = AutoModelForCausalLM.from_pretrained(
-            settings.model_id,
-            token=settings.hf_token,
-            cache_dir=settings.hf_cache_dir,
-            torch_dtype=dtype,
-            device_map="cpu",
-            low_cpu_mem_usage=True,  # stream weights to avoid double-RAM peak during load
+        import litert_lm
+        engine_ctx = litert_lm.Engine(
+            _model_path,
+            backend=litert_lm.Backend.CPU(),
         )
-    except OSError as e:
-        _raise_hf_error(e)
+        _engine = engine_ctx.__enter__()
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialise LiteRT engine: {e}") from e
 
-    _model.eval()
     _model_info = {
         "model_id": settings.model_id,
-        "dtype": str(dtype),
+        "model_filename": settings.model_filename,
+        "model_path": _model_path,
         "simd_level": compat["simd_level"],
         "cache_dir": settings.hf_cache_dir,
         "available_ram_gb": compat["available_ram_gb"],
     }
-    logger.info("Model loaded successfully: %s", settings.model_id)
+    logger.info("LiteRT engine ready — model: %s", settings.model_id)
 
 
-def _raise_hf_error(e: OSError) -> None:
-    msg = str(e)
-    if "gated" in msg.lower() or "access" in msg.lower() or "401" in msg:
-        raise RuntimeError(
-            f"Access denied for model '{settings.model_id}'. "
-            "Make sure you have: (1) accepted the model license at "
-            f"https://huggingface.co/{settings.model_id} and "
-            "(2) set a valid HF_TOKEN in your .env file."
-        ) from e
-    raise RuntimeError(f"Failed to load model from HuggingFace: {e}") from e
+def unload_model() -> None:
+    global _engine
+    if _engine is not None:
+        try:
+            _engine.__exit__(None, None, None)
+        except Exception:
+            pass
+        _engine = None
+    logger.info("LiteRT engine unloaded.")
 
 
-def get_model() -> tuple:
-    if _model is None or _tokenizer is None:
+def get_engine():
+    if _engine is None:
         raise RuntimeError("Model not loaded. The server is still starting up.")
-    return _model, _tokenizer
+    return _engine
 
 
 def get_model_info() -> dict:
@@ -102,4 +98,4 @@ def get_model_info() -> dict:
 
 
 def is_loaded() -> bool:
-    return _model is not None
+    return _engine is not None
