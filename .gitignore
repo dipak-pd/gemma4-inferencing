@@ -1,0 +1,4 @@
+venv/
+model_cache/
+.env
+.env.example

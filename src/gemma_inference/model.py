@@ -52,8 +52,8 @@ def load_model() -> None:
             token=settings.hf_token,
             cache_dir=settings.hf_cache_dir,
         )
-    except OSError as e:
-        _raise_hf_error(e)
+    except Exception as e:
+        _raise_load_error(e, "tokenizer")
 
     logger.info("Loading model weights (this may take several minutes on first run)...")
     try:
@@ -65,8 +65,8 @@ def load_model() -> None:
             device_map="cpu",
             low_cpu_mem_usage=True,  # stream weights to avoid double-RAM peak during load
         )
-    except OSError as e:
-        _raise_hf_error(e)
+    except Exception as e:
+        _raise_load_error(e, "model")
 
     _model.eval()
     _model_info = {
@@ -79,7 +79,7 @@ def load_model() -> None:
     logger.info("Model loaded successfully: %s", settings.model_id)
 
 
-def _raise_hf_error(e: OSError) -> None:
+def _raise_load_error(e: Exception, component: str) -> None:
     msg = str(e)
     if "gated" in msg.lower() or "access" in msg.lower() or "401" in msg:
         raise RuntimeError(
@@ -88,7 +88,17 @@ def _raise_hf_error(e: OSError) -> None:
             f"https://huggingface.co/{settings.model_id} and "
             "(2) set a valid HF_TOKEN in your .env file."
         ) from e
-    raise RuntimeError(f"Failed to load model from HuggingFace: {e}") from e
+    if "ModelWrapper" in msg or "untagged enum" in msg:
+        raise RuntimeError(
+            f"Failed to load {component} for '{settings.model_id}': incompatible "
+            "tokenizer format. Gemma 4 requires transformers>=5.5.2 and "
+            "tokenizers>=0.22.0. Upgrade dependencies with: "
+            "pip install 'transformers>=5.5.2' 'tokenizers>=0.22.0,<=0.23.0' "
+            "'huggingface-hub>=1.5.0'"
+        ) from e
+    raise RuntimeError(
+        f"Failed to load {component} from HuggingFace: {e}"
+    ) from e
 
 
 def get_model() -> tuple:
