@@ -33,25 +33,31 @@ def generate(req: GenerationRequest) -> GenerationResult:
         messages.append({"role": "system", "content": req.system_prompt})
     messages.append({"role": "user", "content": req.prompt})
 
-    # apply_chat_template handles Gemma's <start_of_turn>/<end_of_turn> format
-    input_ids = tokenizer.apply_chat_template(
+    # apply_chat_template handles Gemma's chat format; transformers 5.x returns BatchEncoding
+    encoded = tokenizer.apply_chat_template(
         messages,
         return_tensors="pt",
         add_generation_prompt=True,
+        tokenize=True,
     )
+    input_ids = encoded["input_ids"]
+    attention_mask = encoded.get("attention_mask")
 
     prompt_len = input_ids.shape[-1]
     t0 = time.perf_counter()
 
+    gen_kwargs = {
+        "max_new_tokens": req.max_new_tokens,
+        "temperature": req.temperature if req.do_sample else 1.0,
+        "top_p": req.top_p if req.do_sample else 1.0,
+        "do_sample": req.do_sample,
+        "pad_token_id": tokenizer.eos_token_id,
+    }
+    if attention_mask is not None:
+        gen_kwargs["attention_mask"] = attention_mask
+
     with torch.no_grad():
-        output_ids = model.generate(
-            input_ids,
-            max_new_tokens=req.max_new_tokens,
-            temperature=req.temperature if req.do_sample else 1.0,
-            top_p=req.top_p if req.do_sample else 1.0,
-            do_sample=req.do_sample,
-            pad_token_id=tokenizer.eos_token_id,
-        )
+        output_ids = model.generate(input_ids, **gen_kwargs)
 
     elapsed = time.perf_counter() - t0
     new_token_count = output_ids.shape[-1] - prompt_len
