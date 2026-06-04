@@ -1,19 +1,20 @@
+from typing import Optional
+
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    hf_token: str = Field(..., description="HuggingFace API token")
-    model_id: str = Field(..., description="HuggingFace model ID (e.g. google/gemma-4-E2B-it)")
-    hf_cache_dir: str = Field("./model_cache", description="Local directory for cached model weights")
+    # HuggingFace — token is optional; LiteRT community models are publicly accessible
+    hf_token: Optional[str] = Field(None, description="HuggingFace API token (optional for public models)")
+    model_id: str = Field(..., description="HuggingFace repo ID (e.g. litert-community/gemma-4-E2B-it-litert-lm)")
+    model_filename: str = Field(..., description="Model filename inside the repo (e.g. gemma-4-E2B-it.litertlm)")
+    hf_cache_dir: str = Field("./model_cache", description="Local directory for cached model file")
 
+    # Server
     host: str = Field("0.0.0.0")
     port: int = Field(8000)
     log_level: str = Field("info")
-
-    max_new_tokens: int = Field(512)
-    default_temperature: float = Field(0.7)
-    default_top_p: float = Field(0.9)
 
     class Config:
         env_file = ".env"
